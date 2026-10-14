@@ -73,10 +73,11 @@ details{margin:6px 0;border:1px solid #2a3b66;border-radius:8px;padding:6px 8px}
 if(window.claude)return;
 const proto=location.protocol==='https:'?'wss':'ws';let ws,me=null,open=false;const RS={};
 function conn(){ws=new WebSocket(proto+'://'+location.host+'/ws');
- ws.onopen=()=>{open=true;window.edSendAuth();Object.values(RS).forEach(r=>r._join());Object.values(RS).forEach(r=>r._conn(true))};
- ws.onclose=()=>{open=false;Object.values(RS).forEach(r=>r._conn(false));setTimeout(conn,1500)};
- ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}if(m.t==='hi'){me=m.id;return}if(m.t==='rej'){try{const e=document.getElementById('msg');if(e)e.textContent='Server rejected: '+m.why;console.warn('server rejected',m.topic,m.why)}catch(x){}return}const r=RS[m.room];if(!r)return;if(m.t==='peers')r._peers(m.peers);else if(m.t==='msg')r._msg(m)}}
-const tx=o=>{if(open)ws.send(JSON.stringify(o))};window.edSendAuth=()=>{try{const t=localStorage.getItem('ed_tok');if(t)tx({t:'auth',token:t})}catch(e){}};
+ ws.onopen=()=>{open=true;tx({t:'sid',sid:SID});window.edSendAuth();Object.values(RS).forEach(r=>r._join());Object.values(RS).forEach(r=>r._conn(true));while(OQ.length)tx(OQ.shift());window.edLink&&edLink(0,1)};
+ ws.onclose=()=>{open=false;Object.values(RS).forEach(r=>r._conn(false));window.edLink&&edLink(0,0);setTimeout(conn,1500)};
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}if(m.t==='hi'){me=m.id;return}if(m.t==='away'||m.t==='back'){window.edLink&&edLink(1,m.t==='back');return}if(m.t==='rej'){try{const e=document.getElementById('msg');if(e)e.textContent='Server rejected: '+m.why;console.warn('server rejected',m.topic,m.why)}catch(x){}return}const r=RS[m.room];if(!r)return;if(m.t==='peers')r._peers(m.peers);else if(m.t==='msg')r._msg(m)}}
+const OQ=[];let SID='';try{SID=sessionStorage.getItem('ed_sid')||'';if(!SID){SID=Array.from({length:20},()=>'abcdefghijklmnopqrstuvwxyz0123456789'[Math.random()*36|0]).join('');sessionStorage.setItem('ed_sid',SID)}}catch(e){SID=Array.from({length:20},()=>'abcdefghijklmnopqrstuvwxyz0123456789'[Math.random()*36|0]).join('')}
+const tx=o=>{if(open)ws.send(JSON.stringify(o));else if(o.t==='emit'&&o.room!=='lobby'&&OQ.length<40)OQ.push(o)};window.edSendAuth=()=>{try{const t=localStorage.getItem('ed_tok');if(t)tx({t:'auth',token:t})}catch(e){}};
 function mk(name){const L={},P=[],C=[];let pr=[];
  const r={name,
   on(t,f){(L[t]=L[t]||[]).push(f);return()=>{L[t]=(L[t]||[]).filter(x=>x!==f)}},
@@ -95,6 +96,11 @@ function mk(name){const L={},P=[],C=[];let pr=[];
    P.slice().forEach(f=>f({peers:pr,joined,left,updated:[]}))},
   _msg(m){(L[m.topic]||[]).slice().forEach(f=>f({topic:m.topic,data:m.data,peer:m.peer,isMe:m.peer===me,sameTab:m.peer===me,kind:'viewer',guest:false}))}};
  RS[name]=r;if(open)r._join();return r}
+const LK={me:1,peer:1};let LT=0;
+window.edLink=(peer,ok)=>{LK[peer?'peer':'me']=ok?1:0;let el=document.getElementById('rcn');if(!el){el=document.createElement('div');el.id='rcn';el.style.cssText='position:fixed;top:44px;left:50%;transform:translateX(-50%);z-index:99;background:#3a1b00ee;border:1px solid #ffa24a;color:#ffd9a8;padding:6px 14px;border-radius:10px;font:600 13px system-ui;display:none;pointer-events:none';document.body.appendChild(el)}
+ let on=false;try{on=!!(M&&M.online&&!M.over)}catch(e){}
+ const tr=document.documentElement.lang=='tr'||(typeof LANG!='undefined'&&LANG=='tr');
+ if(on&&!LK.me){el.textContent=tr?'Bağlantın koptu, yeniden bağlanılıyor…':'Connection lost, reconnecting…';el.style.display='block'}else if(on&&!LK.peer){el.textContent=tr?'Rakip yeniden bağlanıyor… (en fazla 35 sn)':'Opponent reconnecting… (up to 35 s)';el.style.display='block'}else el.style.display='none'};
 const lobby=mk('lobby');
 window.claude={use:async n=>n==='room'?lobby:null};
 conn();
