@@ -183,7 +183,8 @@ const rspec = new Map(); // room -> { peerId: validated spec }
 // 'act' messages. It does NOT re-simulate combat; a modified HOST client could still cheat inside its own room (see README).
 const wss = new WebSocketServer({ server: srv, path: '/ws', maxPayload: 16384 });
 const rooms = new Map(); let nextId = 1;
-const send = (w, o) => { if (w.readyState === 1) w.send(JSON.stringify(o)); };
+const send = (w, o) => { if (w.held) { if (w.q && w.q.length < 400) w.q.push(o); } else if (w.readyState === 1) w.send(JSON.stringify(o)); };
+const bySid = new Map(), HOLD = +process.env.EDHOLD || 35000; // session id -> newest socket; a dropped duellist keeps its seat for HOLD ms
 const peerList = n => [...(rooms.get(n) || [])].map(w => ({ peer: w.id, presence: w.pres[n] || {} }));
 const bcastPeers = n => { const l = peerList(n); (rooms.get(n) || new Set()).forEach(w => send(w, { t: 'peers', room: n, peers: l })); };
 const early = new Map(), bat = new Map(); // room -> { host, roles:[...], mode, cur:-1, turnOpen:false, n:0 }
@@ -277,6 +278,19 @@ async function checkEmit(w, n, m) {
   }
 }
 async function handle(w, m) {
+  if (m.t === 'sid') { // a client announces its stable session id: if an older socket of the same session exists (dropped or zombie), take over its identity, rooms and queued messages
+    if (typeof m.sid !== 'string' || !/^[a-z0-9]{8,40}$/.test(m.sid)) return;
+    const old = bySid.get(m.sid); bySid.set(m.sid, w); w.sid = m.sid;
+    if (old && old !== w) {
+      clearTimeout(old.holdT); w.id = old.id; w.pres = old.pres; const rs = [...old.rooms]; old.rooms = new Set(); const q = old.q || []; old.q = null; old.held = false;
+      try { old.terminate(); } catch (e) {}
+      send(w, { t: 'hi', id: w.id });
+      rs.forEach(n => { const set = rooms.get(n); if (set) { set.delete(old); set.add(w); } w.rooms.add(n); });
+      q.forEach(o => send(w, o));
+      rs.forEach(n => { (rooms.get(n) || new Set()).forEach(x => x !== w && send(x, { t: 'back', room: n, peer: w.id })); bcastPeers(n); });
+    }
+    return;
+  }
   if (m.t === 'auth') { const t = typeof m.token === 'string' && m.token.length < 600 ? readTok({ authorization: 'Bearer ' + m.token }) : null; w.uid = t ? t.id : null; w.acc = null; return; }
   if (typeof m.room !== 'string' || m.room.length > 48) return;
   const n = m.room;
@@ -311,7 +325,17 @@ wss.on('connection', w => {
     if (!isObj(m)) return;
     w.chain = (w.chain || Promise.resolve()).then(() => handle(w, m)).catch(e => console.error('ws', e.message)); // per-socket FIFO: async account checks never reorder messages
   });
-  w.on('close', () => { clearInterval(refill); [...w.rooms].forEach(n => leave(w, n)); });
+  w.on('close', () => {
+    clearInterval(refill);
+    if (w.sid && bySid.get(w.sid) !== w) return; // a newer socket of this session already took over
+    const live = [...w.rooms].filter(n => n !== 'lobby' && bat.has(n));
+    if (w.sid && live.length) { // a duel is running: keep the seat for HOLD ms so a short network drop does not end the match
+      [...w.rooms].forEach(n => { if (!live.includes(n)) leave(w, n); });
+      w.rooms = new Set(live); w.held = true; w.q = [];
+      live.forEach(n => (rooms.get(n) || new Set()).forEach(x => x !== w && send(x, { t: 'away', room: n, peer: w.id })));
+      w.holdT = setTimeout(() => { if (bySid.get(w.sid) === w) bySid.delete(w.sid); w.held = false; [...w.rooms].forEach(n => leave(w, n)); }, HOLD);
+    } else { if (w.sid && bySid.get(w.sid) === w) bySid.delete(w.sid); [...w.rooms].forEach(n => leave(w, n)); }
+  });
 });
 setInterval(() => wss.clients.forEach(w => { if (!w.alive) return w.terminate(); w.alive = false; w.ping(); }), 15000);
 
